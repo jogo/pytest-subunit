@@ -1,41 +1,57 @@
-# -*- coding: utf-8 -*-
-# inspired by https://github.com/Frozenball/pytest-sugar
+from __future__ import annotations
+
 import datetime
-import os
 import pathlib
-import re
+from typing import Optional
 
 import py
 import pytest
 from _pytest.terminal import TerminalReporter
-from pytest import File, Module
 from subunit import StreamResultToBytes
 
 
-class InputFile(File):
-    """Each line should be the name of a test file"""
-
-    def collect(self):
-        for line in self.path.open():
-            # Assumes line is a module
-            path = pathlib.PosixPath(line.strip())
-            # always use absolute path
-            path = path.resolve()
-            yield Module.from_parent(parent=self, path=path)
+def to_path(testid: str) -> pathlib.PosixPath:
+    delim = '::'
+    if delim in testid:
+        path = testid.split(delim)[0]
+    else:
+        path = testid
+    return pathlib.PosixPath(path).resolve()
 
 
-def pytest_collect_file(file_path, path, parent):
-    """Test selection by passing in a file with a list of test files"""
-    if file_path.suffix == ".list" and file_path.name.startswith("tests"):
-        return InputFile.from_parent(parent, path=file_path)
+# hook
+def pytest_ignore_collect(collection_path, config) -> Optional[bool]:
+    # Only collect files in the list,
+    # short circuit collection for things we don't care about
+    if config.option.subunit_load_list:
+        # TODO memoize me
+        with open(config.option.subunit_load_list) as f:
+            testids = f.readlines()
+        filenames = [to_path(line.strip()) for line in testids]
+        for filename in filenames:
+            if str(filename).startswith(str(collection_path)):
+                # Don't ignore
+                return None
+        # Ignore everything else by default
+        return True
 
 
+# hook
 def pytest_collection_modifyitems(session, config, items):
     if config.option.subunit:
         terminal_reporter = config.pluginmanager.getplugin("terminalreporter")
         terminal_reporter.tests_count += len(items)
+    if config.option.subunit_load_list:
+        with open(config.option.subunit_load_list) as f:
+            to_run = f.readlines()
+        to_run = [line.strip() for line in to_run]
+        # print(to_run)
+        # print([item.nodeid for item in items])
+        filtered = [item for item in items if item.nodeid in to_run]
+        items[:] = filtered
 
 
+# hook
 def pytest_deselected(items):
     """Update tests_count to not include deselected tests"""
     if len(items) > 0:
@@ -48,6 +64,7 @@ def pytest_deselected(items):
             terminal_reporter.tests_count -= len(items)
 
 
+# hook
 def pytest_addoption(parser):
     group = parser.getgroup("terminal reporting", "reporting", after="general")
     group._addoption(
@@ -56,6 +73,12 @@ def pytest_addoption(parser):
         dest="subunit",
         default=False,
         help=("enable pytest-subunit"),
+    )
+    group._addoption(
+        "--load-list",
+        dest="subunit_load_list",
+        default=False,
+        help=("Path to file with list of tests to run"),
     )
 
 

@@ -4,4 +4,5 @@ echo
 pytest --subunit tests.list | subunit-ls
 pytest --subunit integration_test | subunit-ls
 stestr init
-stestr run
+stestr list
+stestr -p run
