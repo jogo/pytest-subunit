@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import datetime
-import pathlib
 from typing import Optional
 
-import py
+import datetime
+import pathlib
+
 import pytest
 from _pytest.terminal import TerminalReporter
+from _pytest._io import TerminalWriter
 from subunit import StreamResultToBytes
+from io import StringIO
 
 
 def to_path(testid: str) -> pathlib.PosixPath:
@@ -21,8 +23,8 @@ def to_path(testid: str) -> pathlib.PosixPath:
 
 # hook
 def pytest_ignore_collect(collection_path, config) -> Optional[bool]:
-    # Only collect files in the list,
-    # short circuit collection for things we don't care about
+    # TODO: If specify a path, use same short circuit logic
+    # Only collect files in the list
     if config.option.subunit_load_list:
         # TODO memoize me
         with open(config.option.subunit_load_list) as f:
@@ -34,6 +36,7 @@ def pytest_ignore_collect(collection_path, config) -> Optional[bool]:
                 return None
         # Ignore everything else by default
         return True
+    return None
 
 
 # hook
@@ -57,10 +60,7 @@ def pytest_deselected(items):
     if len(items) > 0:
         pluginmanager = items[0].config.pluginmanager
         terminal_reporter = pluginmanager.getplugin("terminalreporter")
-        if (
-            hasattr(terminal_reporter, "tests_count")
-            and terminal_reporter.tests_count > 0
-        ):
+        if hasattr(terminal_reporter, "tests_count") and terminal_reporter.tests_count > 0:
             terminal_reporter.tests_count -= len(items)
 
 
@@ -93,18 +93,20 @@ def pytest_configure(config):
 
 
 class SubunitTerminalReporter(TerminalReporter):
-    no_summary = True
 
     def __init__(self, reporter):
         TerminalReporter.__init__(self, reporter.config)
-        self.writer = self._tw
         self.tests_count = 0
         self.reports = []
         self.skipped = []
         self.failed = []
-        self.result = StreamResultToBytes(self.writer._file)
+        self.result = StreamResultToBytes(self._tw._file)
 
-    def _status(self, report, status):
+    @property
+    def no_summary(self):
+        return True
+
+    def _status(self, report: pytest.TestReport, status: str):
         # task id
         test_id = report.nodeid
 
@@ -112,14 +114,11 @@ class SubunitTerminalReporter(TerminalReporter):
         now = datetime.datetime.now(datetime.timezone.utc)
 
         # capture output
-        writer = py.io.TerminalWriter(stringio=True)
-        try:
-            report.toterminal(writer)
-        except Exception:
-            pass
-        writer.stringio.seek(0)
-        out = writer.stringio.read()
-        out = out.encode("utf-8")
+        buffer = StringIO()
+        writer = TerminalWriter(file=buffer)
+        report.toterminal(writer)
+        buffer.seek(0)
+        out_bytes = buffer.read().encode('utf-8')
 
         # send status
         self.result.status(
@@ -127,7 +126,7 @@ class SubunitTerminalReporter(TerminalReporter):
             test_status=status,
             timestamp=now,
             file_name=report.fspath,
-            file_bytes=out,
+            file_bytes=out_bytes,
             mime_type="text/plain; charset=utf8",
         )
 
@@ -158,7 +157,7 @@ class SubunitTerminalReporter(TerminalReporter):
         # always exit with exitcode 0
         session.exitstatus = 0
 
-    def pytest_runtest_logreport(self, report):
+    def pytest_runtest_logreport(self, report: pytest.TestReport):
         self.reports.append(report)
         test_id = report.nodeid
         if report.when in ["setup", "session"]:

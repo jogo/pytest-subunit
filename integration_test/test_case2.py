@@ -6,4 +6,5 @@ class Tests(unittest.TestCase):
         assert True
 
     def test_false(self):
+        # Expected to fail
         assert False
